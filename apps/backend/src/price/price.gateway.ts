@@ -8,7 +8,7 @@ import {
   OnGatewayDisconnect,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
-import { Inject, forwardRef } from '@nestjs/common';
+import { Inject, forwardRef, Logger } from '@nestjs/common';
 import { PriceService } from './price.service';
 
 @WebSocketGateway({
@@ -16,33 +16,33 @@ import { PriceService } from './price.service';
     origin: '*',
   },
 })
-export class PriceGateway
-  implements OnGatewayConnection, OnGatewayDisconnect
-{
+export class PriceGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer()
   server: Server;
+
+  private readonly logger = new Logger(PriceGateway.name);
 
   constructor(
     @Inject(forwardRef(() => PriceService))
     private readonly priceService: PriceService,
   ) {}
 
-  handleConnection(client: Socket) {
-    console.log(`Client connected: ${client.id}`);
+  handleConnection(client: Socket): void {
+    this.logger.log(`Client connected: ${client.id}`);
   }
 
-  handleDisconnect(client: Socket) {
-    console.log(`Client disconnected: ${client.id}`);
+  handleDisconnect(client: Socket): void {
+    this.logger.log(`Client disconnected: ${client.id}`);
   }
 
   @SubscribeMessage('subscribe')
-  handleSubscribe(
+  async handleSubscribe(
     @MessageBody() data: { pair: string },
     @ConnectedSocket() client: Socket,
-  ) {
+  ): Promise<{ event: string; data: { room: string } }> {
     const room = data.pair.replace('/', '_');
 
-    client.join(room);
+    await client.join(room); // ✅ FIX
 
     return {
       event: 'subscribed',
@@ -50,8 +50,11 @@ export class PriceGateway
     };
   }
 
-  // 🔥 Used by service to push updates
-  sendPriceUpdate(pair: string, payload: any) {
+  // Used by service to push updates
+  sendPriceUpdate(
+    pair: string,
+    payload: { pair: string; price: string; timestamp: number },
+  ): void {
     const room = pair.replace('/', '_');
     this.server.to(room).emit('priceUpdate', payload);
   }

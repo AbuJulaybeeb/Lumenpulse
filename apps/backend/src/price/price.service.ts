@@ -27,12 +27,11 @@ export class PriceService implements OnModuleInit {
    * Starts emitting mock real-time price updates
    * (Stable for demo + PR testing)
    */
-  startPriceListener() {
+  startPriceListener(): void {
     this.logger.log('Starting price update stream...');
 
     setInterval(() => {
       try {
-        //  Simulated real-time price (stable for testing)
         const price = (Math.random() * 0.2 + 0.1).toFixed(4);
 
         const payload = {
@@ -44,9 +43,9 @@ export class PriceService implements OnModuleInit {
         this.gateway.sendPriceUpdate('XLM/USDC', payload);
 
         this.logger.debug(`Price update sent: ${JSON.stringify(payload)}`);
-      } catch (err) {
-        this.logger.error('Price update error:', err);
+      } catch (err: unknown) {
+        this.logger.error('Price update error', err);
       }
-    }, 3000); // every 3 seconds
+    }, 3000);
   }
 }
