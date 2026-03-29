@@ -29,6 +29,9 @@ from src.ml.retraining_pipeline import run_retraining, get_last_run_status
 from src.ml.model_registry import get_registry_status
 from src.analytics.correlation_engine import CorrelationEngine
 from src.db import PostgresService
+from src.analytics.sentiment_indicators import SentimentIndicatorMapper, get_legend as sentiment_legend
+
+_indicator_mapper = SentimentIndicatorMapper()
 
 # Initialize structured logger
 logger = setup_logger(__name__)
@@ -88,7 +91,20 @@ except Exception as exc:
     logger.warning("PostgreSQL service unavailable for /news endpoint: %s", exc)
 
 
+# ---------------------------------------------------------------------------
 # Request/Response models
+# ---------------------------------------------------------------------------
+
+class SentimentIndicatorResponse(BaseModel):
+    """Visual indicator fields attached to every sentiment-bearing response."""
+
+    score: float
+    color: str  # "green" | "red" | "gray"
+    hex_color: str  # CSS hex, e.g. "#00C853"
+    label: str  # "Bullish" | "Bearish" | "Neutral"
+    display_text: str  # e.g. "0.85 Bullish"
+
+
 class AnalyzeRequest(BaseModel):
     text: str
     asset: Optional[str] = None  # Optional asset filter
@@ -98,6 +114,7 @@ class AnalyzeResponse(BaseModel):
     sentiment: float  # compound_score from SentimentResult
     asset_codes: List[str] = []  # Asset codes found in text
     sentiment_label: str = ""  # positive/negative/neutral
+    indicator: Optional[SentimentIndicatorResponse] = None  # Visual colour indicator
 
 
 class AssetAnalysisResponse(BaseModel):
@@ -107,6 +124,7 @@ class AssetAnalysisResponse(BaseModel):
     analysis_count: int
     asset_distribution: Dict[str, int] = {}
     sentiment_distribution: Dict[str, float] = {}
+    indicator: Optional[SentimentIndicatorResponse] = None  # Visual colour indicator
 
 
 class HealthResponse(BaseModel):
@@ -128,6 +146,9 @@ class NewsArticleResponse(BaseModel):
     categories: List[str] = []
     keywords: List[str] = []
     detected_entities: List[str] = []
+    sentiment_score: Optional[float] = None  # Raw compound score stored in DB
+    sentiment_label: Optional[str] = None  # positive / negative / neutral
+    indicator: Optional[SentimentIndicatorResponse] = None  # Visual colour indicator
 
 @app.get("/metrics")
 async def metrics():
@@ -148,6 +169,7 @@ async def root(request: Request) -> Dict[str, Any]:
             "POST /analyze": "Analyze text sentiment (requires X-API-Key header)",
             "GET /analyze": "Get asset-specific sentiment analysis (requires X-API-Key header)",
             "POST /analyze-batch": "Batch analyze multiple texts (requires X-API-Key header)",
+            "GET /sentiment/legend": "Get colour legend for sentiment indicators (no auth required)",
         },
         "note": "Returns sentiment score between -1 (negative) and 1 (positive)",
         "security": "All endpoints except /health and /metrics require X-API-Key header",
@@ -198,6 +220,14 @@ async def get_news(
             request_context.client.host,
         )
 
+        def _build_indicator(
+            score: Optional[float],
+        ) -> Optional[SentimentIndicatorResponse]:
+            if score is None:
+                return None
+            ind = _indicator_mapper.score_to_indicator(score)
+            return SentimentIndicatorResponse(**ind.to_dict())
+
         return [
             NewsArticleResponse(
                 article_id=article.article_id,
@@ -214,6 +244,9 @@ async def get_news(
                 categories=article.categories or [],
                 keywords=article.keywords or [],
                 detected_entities=article.detected_entities or [],
+                sentiment_score=article.sentiment_score,
+                sentiment_label=article.sentiment_label,
+                indicator=_build_indicator(article.sentiment_score),
             )
             for article in articles
         ]
@@ -252,11 +285,15 @@ async def analyze_text(request: AnalyzeRequest, request_context: Request) -> Ana
             f"asset: {request.asset} | client_ip: {request_context.client.host}"
         )
 
+        # Build visual indicator
+        ind = _indicator_mapper.score_to_indicator(result.compound_score)
+
         # Return enhanced response with asset information
         return AnalyzeResponse(
             sentiment=result.compound_score,
             asset_codes=result.asset_codes,
             sentiment_label=result.sentiment_label,
+            indicator=SentimentIndicatorResponse(**ind.to_dict()),
         )
 
     except HTTPException:
@@ -297,13 +334,16 @@ async def get_asset_analysis(
         logger.info(f"Requested asset analysis for: {asset} | client_ip: {request_context.client.host}")
         
         # Mock response - replace with actual database query
+        mock_score = 0.0
+        ind = _indicator_mapper.score_to_indicator(mock_score)
         return AssetAnalysisResponse(
             asset=asset,
-            sentiment=0.0,  # Neutral sentiment as placeholder
+            sentiment=mock_score,
             sentiment_label="neutral",
             analysis_count=0,
             asset_distribution={},
             sentiment_distribution={"positive": 0.0, "negative": 0.0, "neutral": 1.0},
+            indicator=SentimentIndicatorResponse(**ind.to_dict()),
         )
 
     except HTTPException:
@@ -333,6 +373,31 @@ async def analyze_batch(request_context: Request, texts: list[str], asset: Optio
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/sentiment/legend")
+async def get_sentiment_legend() -> Dict[str, Any]:
+    """
+    Return the colour legend that frontend clients use to render
+    sentiment badge tooltips.
+
+    No authentication required — purely informational.
+
+    Returns a list of objects with keys:
+    - color       : semantic name ("green" | "red" | "gray")
+    - hex_color   : CSS hex value
+    - label       : human-readable label ("Bullish" | "Bearish" | "Neutral")
+    - description : tooltip copy
+    - score_range : score boundary description
+    """
+    return {
+        "legend": sentiment_legend(),
+        "thresholds": {
+            "bullish": "score >= 0.05",
+            "bearish": "score <= -0.05",
+            "neutral": "-0.05 < score < 0.05",
+        },
+    }
 
 
 if __name__ == "__main__":
