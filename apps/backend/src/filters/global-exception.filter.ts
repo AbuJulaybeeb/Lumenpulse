@@ -131,7 +131,10 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       exceptionResponse !== null &&
       'errorCode' in exceptionResponse
     ) {
-      return (exceptionResponse as any).errorCode;
+      const resp = exceptionResponse as Record<string, unknown>;
+      if (typeof resp.errorCode === 'string') {
+        return resp.errorCode;
+      }
     }
 
     // Default mappings based on status code
